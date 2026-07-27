@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build plugin
+        run: |
+          chmod +x ./gradlew
+          ./gradlew buildPlugin --no-daemon --stacktrace
+
+      - name: Resolve version and zip
+        id: artifact
+        run: |
+          VERSION=$(./gradlew properties -q | sed -n 's/^version: //p' | head -n1)
+          if [ -z "$VERSION" ]; then
+            VERSION=$(grep -E '^\s*version\s*=' build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          fi
+          ZIP_PATH=$(ls -1 build/distributions/*.zip | head -n1)
+          ZIP_NAME=$(basename "$ZIP_PATH")
+          {
+            echo "version=$VERSION"
+            echo "zip_path=$ZIP_PATH"
+            echo "zip_name=$ZIP_NAME"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved version=$VERSION zip=$ZIP_PATH"
+
+      - name: Publish latest release (overwrite)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.artifact.outputs.version }}
+          ZIP_PATH: ${{ steps.artifact.outputs.zip_path }}
+          ZIP_NAME: ${{ steps.artifact.outputs.zip_name }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${SHA:0:7}"
+          TITLE="Legado Reader ${VERSION}"
+          # 每次完整重写 notes，不使用 generate release notes，避免正文累加
+          NOTES="$(cat <<EOF
+          ## Legado Reader ${VERSION}
+
+          - Commit: \`${SHORT_SHA}\`
+          - Artifact: \`${ZIP_NAME}\`
+
+          安装：IDE → Settings → Plugins → ⚙️ → Install Plugin from Disk… → 选择 zip
+          EOF
+          )"
+
+          # 删除旧的 latest release + tag，再重建，确保附件和正文都覆盖而不是追加
+          gh release delete latest --repo "$REPO" --cleanup-tag --yes || true
+          # 若仅 tag 残留也清掉
+          git push origin :refs/tags/latest || true
+
+          gh release create latest "$ZIP_PATH" \
+            --repo "$REPO" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            --latest

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugins>
+    <plugin id="me.kuku.legado" url="https://github.com/nancheung/legado-reader/releases/download/v1.0.0/legado-reader-1.0.0.zip" version="1.0.0">
+        <name>Legado Reader</name>
+
+        <description><![CDATA[
+            IDE 小说阅读插件，对接 langge 接口：书架、目录、正文阅读。<br>
+            设置中配置 API 地址与 Cookie 即可使用。<br>
+            <em>Code it, and read it.</em>
+     ]]></description>
+
+        <change-notes><![CDATA[
+        <h2>V1.0.0</h2>
+        <h3>特性</h3>
+        <ul>
+            <li>对接大灰狼/langge 接口：书架、目录、正文、进度同步</li>
+            <li>设置页配置 API 地址与 Cookie</li>
+            <li>支持书架阅读、上下章切换、正文刷新</li>
+            <li>支持正文字体颜色与字号设置</li>
+            <li>支持异常日志开关</li>
+        </ul>
+        <h3>说明</h3>
+        <ul>
+            <li>包名：me.kuku.legado</li>
+            <li>正文请求对齐书源：POST /content，version=4.11.5.1</li>
+        </ul>
+]]></change-notes>
+
+        <idea-version since-build="201" until-build="999.*"/>
+    </plugin>
+</plugins>

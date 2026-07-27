@@ -1,0 +1,80 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>me.kuku.legado</id>
+
+    <!-- Public plugin name should be written in Title Case.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
+    <name>Legado Reader</name>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor email="i@kuku.me" url="https://kuku.me">kuku</vendor>
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
+         Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
+    <description><![CDATA[
+    IDE 小说阅读插件，对接 langge 接口：书架、目录、正文阅读。<br>
+    设置中配置 API 地址与 Cookie 即可使用。<br>
+    <em>Code it, and read it.</em>
+  ]]></description>
+
+    <change-notes><![CDATA[
+        <h2>V1.0.0</h2>
+        <h3>特性</h3>
+        <ul>
+            <li>对接大灰狼/langge 接口：书架、目录、正文、进度同步</li>
+            <li>设置页配置 API 地址与 Cookie</li>
+            <li>支持书架阅读、上下章切换、正文刷新</li>
+            <li>支持正文字体颜色与字号设置</li>
+            <li>支持异常日志开关</li>
+        </ul>
+]]></change-notes>
+
+    <!-- Product and plugin compatibility requirements.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
+    <depends>com.intellij.modules.platform</depends>
+
+    <!-- Extension points defined by the plugin.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <extensions defaultExtensionNs="com.intellij">
+        <projectConfigurable id="me.kuku.legado.setting"
+                             groupId="tools" displayName="Legado Reader"
+                             instance="me.kuku.legado.gui.SettingFactory"/>
+
+        <toolWindow id="Legado Reader"
+                    secondary="true"
+                    anchor="right" factoryClass="me.kuku.legado.toolwindow.IndexWindowFactory" icon="/META-INF/pluginIcon.svg">
+        </toolWindow>
+    </extensions>
+    <actions>
+        <action id="me.kuku.legado.action.previousChapter" class="me.kuku.legado.action.PreviousChapterAction"
+                text="上一章" icon="/icons/previousChapter.svg">
+            <keyboard-shortcut keymap="$default" first-keystroke="shift alt LEFT"/>
+        </action>
+        <action id="me.kuku.legado.action.nextChapter" class="me.kuku.legado.action.NextChapterAction"
+                text="下一章" icon="/icons/nextChapter.svg">
+            <keyboard-shortcut keymap="$default" first-keystroke="shift alt RIGHT"/>
+        </action>
+
+        <group id="me.kuku.legado.bar.textBodyToolbar">
+            <action id="me.kuku.legado.action.backBookshelf" class="me.kuku.legado.action.BackBookshelfAction"
+                    text="返回书架" icon="/icons/back.svg"/>
+            <separator/>
+            <reference ref="me.kuku.legado.action.previousChapter"/>
+            <reference ref="me.kuku.legado.action.nextChapter"/>
+            <separator/>
+            <action id="me.kuku.legado.action.showBookInfo" class="me.kuku.legado.action.ShowBookInfoAction"
+                    text="当前阅读信息" icon="/icons/showBookInfo.svg"/>
+            <separator/>
+            <action id="me.kuku.legado.action.textBodyRefresh" class="me.kuku.legado.action.TextBodyRefreshAction"
+                    text="刷新文章" icon="/icons/refresh.svg"/>
+        </group>
+
+        <group id="me.kuku.legado.bar.bookshelfBar">
+            <action id="me.kuku.legado.action.refreshBookshelf" class="me.kuku.legado.action.BookshelfRefreshAction"
+                    text="刷新书架" icon="/icons/refresh.svg"/>
+        </group>
+
+    </actions>
+</idea-plugin>

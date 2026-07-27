@@ -1,0 +1,22 @@
+[versions]
+# 与 IntelliJ 2025.2 平台自带 Kotlin stdlib 对齐，避免 NoSuchMethodError
+kotlin = "2.4.10"
+intellij = "2.10.5"
+lombok = "9.5.0"
+okhttp = "5.4.0"
+jackson = "3.2.1"
+guava = "33.6.0-jre"
+
+[libraries]
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+jackson-databind = { module = "tools.jackson.core:jackson-databind", version.ref = "jackson" }
+jackson-kotlin = { module = "tools.jackson.module:jackson-module-kotlin", version.ref = "jackson" }
+guava = { module = "com.google.guava:guava", version.ref = "guava" }
+
+
+
+[plugins]
+kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+intellij = { id = "org.jetbrains.intellij.platform", version.ref = "intellij" }
+lombok = { id = "io.freefair.lombok", version.ref = "lombok" }
+kotlin-lombok = { id = "org.jetbrains.kotlin.plugin.lombok", version.ref = "kotlin" }
