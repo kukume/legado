@@ -36,6 +36,10 @@ public interface Constant {
 
     String PLUGIN_SHELF_BAR_ID = PLUGIN_ID_PREFIX + ".bar.bookshelfBar";
 
+    /**
+     * 标题栏：显示/隐藏下方图标工具栏
+     */
+    String PLUGIN_ACTION_TOGGLE_ACTION_BAR_ID = PLUGIN_ACTION_ID_PREFIX + ".toggleActionBar";
 
     /**
      * 持久化数据

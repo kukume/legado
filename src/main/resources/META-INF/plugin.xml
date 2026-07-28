@@ -56,6 +56,9 @@
                 text="下一章" icon="/icons/nextChapter.svg">
             <keyboard-shortcut keymap="$default" first-keystroke="shift alt RIGHT"/>
         </action>
+        <action id="me.kuku.legado.action.toggleActionBar" class="me.kuku.legado.action.ToggleActionBarAction"
+                text="切换工具栏" description="显示或隐藏下方图标按钮栏"
+                icon="/icons/toggleBar.svg"/>
 
         <group id="me.kuku.legado.bar.textBodyToolbar">
             <action id="me.kuku.legado.action.backBookshelf" class="me.kuku.legado.action.BackBookshelfAction"
