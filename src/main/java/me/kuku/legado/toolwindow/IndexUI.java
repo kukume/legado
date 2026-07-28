@@ -76,6 +76,10 @@ public class IndexUI {
 
     private String currentPreLoad;
 
+    /** 正文平滑滚动动画 */
+    private Timer smoothScrollTimer;
+    private int smoothScrollTarget;
+
     private static final IndexUI INSTANCE = new IndexUI();
 
     public IndexUI() {
@@ -107,6 +111,93 @@ public class IndexUI {
         bookshelfTable.addMouseListener(toTextBodyMouseAdapter());
 
         textBodyScrollPane.getVerticalScrollBar().addAdjustmentListener(preload());
+        // 正文阅读：滚轮平滑滚动，避免默认 JScrollPane 步进瞬移
+        installSmoothScrolling(textBodyScrollPane);
+    }
+
+    /**
+     * 将默认滚轮“按步进瞬移”改为缓动滚动；触控板高精度事件则直接跟手。
+     */
+    private void installSmoothScrolling(JScrollPane scrollPane) {
+        updateScrollIncrements();
+
+        for (MouseWheelListener listener : scrollPane.getMouseWheelListeners()) {
+            scrollPane.removeMouseWheelListener(listener);
+        }
+
+        scrollPane.addMouseWheelListener(e -> {
+            if (!scrollPane.isWheelScrollingEnabled()) {
+                return;
+            }
+            // Shift + 滚轮：横向
+            if (e.isShiftDown()) {
+                JScrollBar hBar = scrollPane.getHorizontalScrollBar();
+                if (hBar != null && hBar.isVisible()) {
+                    e.consume();
+                    int unit = Math.max(16, hBar.getUnitIncrement());
+                    hBar.setValue(hBar.getValue() + e.getUnitsToScroll() * unit);
+                }
+                return;
+            }
+
+            e.consume();
+            JScrollBar bar = scrollPane.getVerticalScrollBar();
+            int unit = Math.max(12, bar.getUnitIncrement());
+            double precise = e.getPreciseWheelRotation();
+
+            // 触控板等连续滚动：直接跟手，不做动画，避免拖泥带水
+            if (Math.abs(precise) > 0 && Math.abs(precise) < 1.0) {
+                int delta = (int) Math.round(precise * unit * 4);
+                if (delta == 0) {
+                    delta = precise > 0 ? 1 : -1;
+                }
+                bar.setValue(bar.getValue() + delta);
+                return;
+            }
+
+            int delta = e.getUnitsToScroll() * unit;
+            if (delta == 0) {
+                delta = e.getWheelRotation() * unit * 3;
+            }
+            int base = (smoothScrollTimer != null && smoothScrollTimer.isRunning())
+                    ? smoothScrollTarget
+                    : bar.getValue();
+            smoothScrollBy(bar, base + delta);
+        });
+    }
+
+    private void updateScrollIncrements() {
+        Font font = textBodyPane.getFont();
+        int line = Math.max(16, font.getSize() + 8);
+        JScrollBar bar = textBodyScrollPane.getVerticalScrollBar();
+        bar.setUnitIncrement(line);
+        bar.setBlockIncrement(line * 10);
+    }
+
+    private void smoothScrollBy(JScrollBar bar, int target) {
+        int min = bar.getMinimum();
+        int max = Math.max(min, bar.getMaximum() - bar.getVisibleAmount());
+        smoothScrollTarget = Math.max(min, Math.min(max, target));
+
+        if (smoothScrollTimer != null && smoothScrollTimer.isRunning()) {
+            return;
+        }
+
+        smoothScrollTimer = new Timer(12, null);
+        smoothScrollTimer.addActionListener(ev -> {
+            int current = bar.getValue();
+            int diff = smoothScrollTarget - current;
+            if (Math.abs(diff) <= 1) {
+                bar.setValue(smoothScrollTarget);
+                smoothScrollTimer.stop();
+                return;
+            }
+            // ease-out：剩余距离越大步子越大，接近目标时减速
+            int step = (int) Math.ceil(Math.abs(diff) * 0.28);
+            step = Math.max(1, Math.min(step, Math.abs(diff)));
+            bar.setValue(current + (diff > 0 ? step : -step));
+        });
+        smoothScrollTimer.start();
     }
 
     private AdjustmentListener preload() {
@@ -232,6 +323,7 @@ public class IndexUI {
      * @param durChapterPos 当前在章节中的位置
      */
     public void switchChapter(int durChapterPos) {
+        stopSmoothScroll();
         textBodyScrollPane.getVerticalScrollBar().setValue(0);
 
         // 设置正文面板UI
@@ -249,6 +341,7 @@ public class IndexUI {
         if (fontSize > 0) {
             textBodyPane.setFont(new Font(font.getName(), font.getStyle(), fontSize));
         }
+        updateScrollIncrements();
         // 设置加载中的提示
         textBodyPane.setText("加载中...");
 
@@ -263,6 +356,12 @@ public class IndexUI {
 
         // 获取焦点到文本框
         textBodyPane.requestFocus();
+    }
+
+    private void stopSmoothScroll() {
+        if (smoothScrollTimer != null && smoothScrollTimer.isRunning()) {
+            smoothScrollTimer.stop();
+        }
     }
 
     private void setTextBodyUIData(int durChapterPos) {
