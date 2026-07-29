@@ -16,7 +16,9 @@ data class SettingsState(
     var textBodyFont: String = "",
     var enableShowBodyInLine: Boolean = false,
     var textBodyFontSize: Int = 0,
-    var textBodyFontName: String = ""
+    var textBodyFontName: String = "",
+    /** 行内阅读：每段显示字数，默认 80 */
+    var inlineReadChunkSize: Int = 80
 )
 
 @State(
@@ -36,6 +38,9 @@ class SettingsService : PersistentStateComponent<SettingsState> {
         this.state = state
         if (this.state.address.isBlank()) {
             this.state.address = "https://api.langge.cf"
+        }
+        if (this.state.inlineReadChunkSize <= 0) {
+            this.state.inlineReadChunkSize = 80
         }
     }
 

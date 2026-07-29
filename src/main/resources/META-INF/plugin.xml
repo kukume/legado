@@ -59,6 +59,9 @@
         <action id="me.kuku.legado.action.toggleActionBar" class="me.kuku.legado.action.ToggleActionBarAction"
                 text="切换工具栏" description="显示或隐藏下方图标按钮栏"
                 icon="/icons/toggleBar.svg"/>
+        <action id="me.kuku.legado.action.toggleInlineRead" class="me.kuku.legado.action.ToggleInlineReadAction"
+                text="行内阅读" description="单击显示；同行再点下一段；换行只换位置"
+                icon="/icons/inlineRead.svg"/>
 
         <group id="me.kuku.legado.bar.textBodyToolbar">
             <action id="me.kuku.legado.action.backBookshelf" class="me.kuku.legado.action.BackBookshelfAction"

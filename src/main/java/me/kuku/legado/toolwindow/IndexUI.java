@@ -9,6 +9,7 @@ import me.kuku.legado.api.dto.BookChapterDTO;
 import me.kuku.legado.api.dto.BookDTO;
 import me.kuku.legado.common.Constant;
 import me.kuku.legado.dao.CurrentReadData;
+import me.kuku.legado.inline.InlineReadMode;
 import me.kuku.legado.state.State;
 import lombok.Getter;
 import org.jetbrains.annotations.NotNull;
@@ -1083,10 +1084,14 @@ public class IndexUI {
         // 获取章节标题
         String title = CurrentReadData.getBookChapter().getTitle();
 
+        // 用户主动换章时重置行内阅读分段（三击上一章末段由 InlineReadMode 自行处理）
+        InlineReadMode.resetToFirstChunk();
+
         // 调用API获取正文内容
         CompletableFuture.supplyAsync(() -> ApiUtils.getBookContent(book, index))
                 .thenAccept(bookContent -> {
                     CurrentReadData.setBodyContent(bookContent);
+                    InlineReadMode.afterBodyLoaded();
 
                     // 设置正文内容
                     Runnable ui = () -> {

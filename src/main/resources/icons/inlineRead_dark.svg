@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- 文档轮廓 -->
+  <path fill="none" stroke="#ffffff" stroke-width="1.2" stroke-linejoin="round"
+        d="M3.5 1.5h6.2L12.5 4.3V14.5h-9V1.5z"/>
+  <path fill="none" stroke="#ffffff" stroke-width="1.2" stroke-linejoin="round"
+        d="M9.5 1.5V4.5H12.5"/>
+  <!-- 行文字 -->
+  <path stroke="#ffffff" stroke-width="1.1" stroke-linecap="round" d="M5 7.2h6"/>
+  <path stroke="#ffffff" stroke-width="1.1" stroke-linecap="round" d="M5 9.5h6"/>
+  <path stroke="#ffffff" stroke-width="1.1" stroke-linecap="round" d="M5 11.8h4"/>
+</svg>

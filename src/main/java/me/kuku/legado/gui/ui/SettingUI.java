@@ -20,10 +20,13 @@ public class SettingUI {
     private JCheckBox enableErrorLogCheckBox;
     private JTextField cookieField;
     private JTextField addressTextField;
+    private JSpinner inlineReadChunkSizeSpinner;
 
     public SettingUI() {
         // 正文大小输入范围
         textBodyFontSizeSpinner.setModel(new SpinnerNumberModel(0, 0, 100, 1));
+        // 行内阅读每段字数
+        inlineReadChunkSizeSpinner.setModel(new SpinnerNumberModel(80, 1, 500, 1));
 
         // 正文字体颜色选择的点击事件
         textBodyFontColorLabel.addMouseListener(chooseColorMouseListener());
@@ -53,6 +56,7 @@ public class SettingUI {
         String cookie = settingsService.getState().getCookie();
         boolean enableErrorLog = settingsService.getState().getEnableErrorLog();
         String address = settingsService.getState().getAddress();
+        int inlineChunk = settingsService.getState().getInlineReadChunkSize();
 
         if (StringUtil.isNotEmpty(textBodyFontColor)) {
             int rgb = Integer.parseInt(textBodyFontColor);
@@ -76,6 +80,11 @@ public class SettingUI {
         }
 
         enableErrorLogCheckBox.setSelected(enableErrorLog);
+
+        if (inlineChunk <= 0) {
+            inlineChunk = 80;
+        }
+        inlineReadChunkSizeSpinner.setValue(inlineChunk);
     }
 
 
@@ -91,5 +100,10 @@ public class SettingUI {
             address = "https://api.langge.cf";
         }
         settingsService.getState().setAddress(address.trim());
+        int inlineChunk = Integer.parseInt(String.valueOf(inlineReadChunkSizeSpinner.getValue()));
+        if (inlineChunk <= 0) {
+            inlineChunk = 80;
+        }
+        settingsService.getState().setInlineReadChunkSize(inlineChunk);
     }
 }
