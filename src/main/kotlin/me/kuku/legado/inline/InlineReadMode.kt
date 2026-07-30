@@ -15,6 +15,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.UIUtil
+import me.kuku.legado.api.ApiUtils
 import me.kuku.legado.dao.CurrentReadData
 import me.kuku.legado.state.SettingsService
 import me.kuku.legado.toolwindow.IndexUI
@@ -34,11 +35,19 @@ import javax.swing.SwingUtilities
  * - 当前没有显示 → 显示当前段
  * - 已显示且仍在同一行 → 下一段
  * - 已显示但点到了另一行 → 只换位置显示，不切段
+ *
+ * 修饰键：
+ * - 已显示 + 同一行 Ctrl/⌘+单击 → 上一段（consume，避免与 Goto Declaration 冲突）
+ * - 未显示 / 其它行 Ctrl/⌘+单击 → 完全不处理，交给 IDE
+ *
+ * 接近章末时会预加载下一章正文到 ApiUtils 缓存（与正文窗口滚过半页同理）。
  */
 object InlineReadMode {
 
     private const val DEFAULT_CHUNK_SIZE = 80
     private const val PROP_ENABLED = "me.kuku.legado.inlineRead.enabled"
+    /** 剩余段数 ≤ 此值时预加载下一章 */
+    private const val PRELOAD_REMAINING_CHUNKS = 2
 
     /** 每段字数：读取设置，非法值回退默认 80 */
     @JvmStatic
@@ -61,6 +70,17 @@ object InlineReadMode {
     @Volatile
     private var pendingJumpToLastChunk: Boolean = false
 
+    /**
+     * 章末切下一章后，正文异步加载尚未完成。
+     * 期间禁止再按旧 body 切片，等 afterBodyLoaded 后刷新第一段。
+     */
+    @Volatile
+    private var pendingShowAfterLoad: Boolean = false
+
+    /** 已发起预加载的 key，避免重复打接口 */
+    @Volatile
+    private var preloadedNextKey: String? = null
+
     private val parentDisposable = Disposer.newDisposable("legado-inline-read")
     private var listenerInstalled = false
 
@@ -82,6 +102,17 @@ object InlineReadMode {
             val editor = event.editor
             if (editor.isDisposed) return
             FileDocumentManager.getInstance().getFile(editor.document) ?: return
+
+            val withModifier = me.isControlDown || me.isMetaDown
+            if (withModifier) {
+                // 仅「已显示且同一行」才处理上一段；其它情况完全交给 IDE
+                if (!isShowingOn(editor)) return
+                val line = currentClickLine(editor)
+                val sameLine = lastShowEditor === editor && line >= 0 && line == lastShowLine
+                if (!sameLine) return
+                handlePreviousChunkClick(editor, me)
+                return
+            }
             handleClick(editor)
         }
     }
@@ -99,6 +130,7 @@ object InlineReadMode {
             if (value) {
                 ensureListener()
             } else {
+                pendingShowAfterLoad = false
                 clearInlay()
             }
         }
@@ -122,6 +154,7 @@ object InlineReadMode {
         if (text.isEmpty()) {
             chunkIndex = 0
             pendingJumpToLastChunk = false
+            pendingShowAfterLoad = false
             return
         }
         if (pendingJumpToLastChunk) {
@@ -129,6 +162,17 @@ object InlineReadMode {
             chunkIndex = maxChunkIndex(text)
         } else {
             chunkIndex = chunkIndex.coerceIn(0, maxChunkIndex(text))
+        }
+        // 章末切章后 body 异步到达：用新章内容刷新当前 inlay（通常是第一段）
+        if (pendingShowAfterLoad) {
+            pendingShowAfterLoad = false
+            ApplicationManager.getApplication().invokeLater {
+                if (!enabled) return@invokeLater
+                val editor = activeEditor?.takeUnless { it.isDisposed }
+                    ?: lastShowEditor?.takeUnless { it.isDisposed }
+                    ?: return@invokeLater
+                showCurrent(editor)
+            }
         }
     }
 
@@ -138,26 +182,67 @@ object InlineReadMode {
         listenerInstalled = true
     }
 
+    private fun isShowingOn(editor: Editor): Boolean {
+        return activeInlay != null &&
+                activeInlay?.isValid == true &&
+                activeEditor === editor
+    }
+
+    private fun currentClickLine(editor: Editor): Int {
+        return try {
+            editor.document.getLineNumber(editor.caretModel.offset)
+        } catch (_: Exception) {
+            -1
+        }
+    }
+
+    /**
+     * 已显示且同一行的 Ctrl/⌘+单击 → 上一段。
+     * 调用前已确认 same-line；此处 consume，避免与跳转定义冲突。
+     */
+    private fun handlePreviousChunkClick(editor: Editor, me: java.awt.event.MouseEvent) {
+        if (pendingShowAfterLoad) {
+            showInlay(editor, "加载中…")
+            me.consume()
+            return
+        }
+        val text = plainBody()
+        if (text.isBlank()) {
+            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
+            me.consume()
+            return
+        }
+        if (previousChunk()) {
+            showInlay(editor, "加载中…")
+        } else {
+            showCurrent(editor)
+        }
+        me.consume()
+    }
+
     private fun handleClick(editor: Editor) {
+        // 下一章正文还在加载：不要用旧章 body 切片
+        if (pendingShowAfterLoad) {
+            showInlay(editor, "加载中…")
+            return
+        }
+
         val text = plainBody()
         if (text.isBlank()) {
             showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
             return
         }
 
-        val line = try {
-            editor.document.getLineNumber(editor.caretModel.offset)
-        } catch (_: Exception) {
-            -1
-        }
+        val line = currentClickLine(editor)
 
-        val showing = activeInlay != null &&
-                activeInlay?.isValid == true &&
-                activeEditor === editor
+        val showing = isShowingOn(editor)
 
         if (showing && lastShowEditor === editor && line >= 0 && line == lastShowLine) {
-            // 同一行再点 → 下一段
-            nextChunk()
+            // 同一行再点 → 下一段；若已触发切章，等 afterBodyLoaded 刷新
+            if (nextChunk()) {
+                showInlay(editor, "加载中…")
+                return
+            }
         }
         // 未显示，或换行点击：只（重新）显示当前段，不切段
         showCurrent(editor)
@@ -187,22 +272,88 @@ object InlineReadMode {
         return text.substring(start, end).replace('\n', ' ')
     }
 
-    private fun nextChunk() {
+    /**
+     * 推进到下一段。
+     * @return true 表示已发起切章、正文尚未就绪，调用方不要立刻用旧 body 显示
+     */
+    private fun nextChunk(): Boolean {
+        if (pendingShowAfterLoad) return true
         val text = plainBody()
-        if (text.isEmpty()) return
+        if (text.isEmpty()) return false
         val max = maxChunkIndex(text)
         if (chunkIndex < max) {
             chunkIndex++
-            return
+            maybePreloadNextChapter(max)
+            return false
         }
-        // 本章读完 → 下一章第一段
+        // 本章读完 → 下一章第一段（body 异步加载，先标记 pending）
         val chapters = CurrentReadData.bookChapterList
         val idx = CurrentReadData.bookIndex
         if (idx >= 0 && idx + 1 < chapters.size) {
             CurrentReadData.indexAtomicIncrement()
             chunkIndex = 0
+            pendingShowAfterLoad = true
             ApplicationManager.getApplication().invokeLater {
                 IndexUI.getInstance().switchChapter(0)
+            }
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 回退到上一段。
+     * @return true 表示已发起切章（上一章末段）、正文尚未就绪
+     */
+    private fun previousChunk(): Boolean {
+        if (pendingShowAfterLoad) return true
+        val text = plainBody()
+        if (text.isEmpty()) return false
+        if (chunkIndex > 0) {
+            chunkIndex--
+            return false
+        }
+        // 本章第一段 → 上一章最后一段
+        val chapters = CurrentReadData.bookChapterList
+        val idx = CurrentReadData.bookIndex
+        if (idx > 0 && idx < chapters.size) {
+            CurrentReadData.indexAtomicDecrement()
+            pendingJumpToLastChunk = true
+            pendingShowAfterLoad = true
+            ApplicationManager.getApplication().invokeLater {
+                IndexUI.getInstance().switchChapter(0)
+            }
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 接近章末时预拉下一章正文，写入 ApiUtils bookCache。
+     * 与正文窗口 scroll > 50% 的 preload 共用同一缓存，切章可秒开。
+     */
+    private fun maybePreloadNextChapter(maxChunk: Int = maxChunkIndex(plainBody())) {
+        if (!enabled) return
+        val remaining = maxChunk - chunkIndex
+        if (remaining > PRELOAD_REMAINING_CHUNKS) return
+
+        val book = CurrentReadData.book
+        val nextIndex = CurrentReadData.bookIndex + 1
+        val chapters = CurrentReadData.bookChapterList
+        if (nextIndex < 0 || nextIndex >= chapters.size) return
+
+        val key = "${book.bookId}:${book.source}:$nextIndex"
+        if (key == preloadedNextKey) return
+        preloadedNextKey = key
+
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                ApiUtils.getBookContent(book, nextIndex)
+            } catch (_: Exception) {
+                // 预加载失败不打扰阅读；允许下次再试
+                if (preloadedNextKey == key) {
+                    preloadedNextKey = null
+                }
             }
         }
     }
@@ -217,6 +368,7 @@ object InlineReadMode {
         val max = maxChunkIndex(text)
         val progress = "${chunkIndex + 1}/${max + 1}"
         showInlay(editor, "$chunk ·$progress")
+        maybePreloadNextChapter(max)
     }
 
     private fun showInlay(editor: Editor, text: String) {
