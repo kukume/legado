@@ -12,7 +12,7 @@ import me.kuku.legado.inline.InlineReadMode
  */
 class ToggleInlineReadAction : AnAction(
     "行内阅读",
-    "开启后：单击显示；同行再点下一段；同行 Ctrl/⌘+单击上一段；换行只换位置",
+    "开启后：单击显示；同行每次左键下一段；同行 Ctrl/⌘+左键上一段；换行只换位置",
     IconLoader.getIcon("/icons/inlineRead.svg", ToggleInlineReadAction::class.java)
 ), Toggleable {
 
@@ -30,9 +30,9 @@ class ToggleInlineReadAction : AnAction(
         Toggleable.setSelected(e.presentation, on)
         e.presentation.text = if (on) "关闭行内阅读" else "开启行内阅读"
         e.presentation.description = if (on) {
-            "已开启：单击显示；同行再点下一段；同行 Ctrl/⌘+单击上一段；换行只换位置（每段 ${InlineReadMode.chunkSize} 字）"
+            "已开启：单击显示；同行每次左键下一段（连点也算）；同行 Ctrl/⌘+左键上一段（每段 ${InlineReadMode.chunkSize} 字）。Ctrl+Alt+单击可开关"
         } else {
-            "开启后在编辑器中分段显示正文，适合隐蔽阅读"
+            "开启后在编辑器中分段显示正文。也可用 Ctrl+Alt+单击开关（点在类/方法上时仍走 IDE 跳转）"
         }
     }
 

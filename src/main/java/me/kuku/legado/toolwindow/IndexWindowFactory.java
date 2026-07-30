@@ -21,7 +21,9 @@ public class IndexWindowFactory implements ToolWindowFactory {
                 new ToggleInlineReadAction(),
                 new ToggleActionBarAction()
         ));
-        // 若上次已开启行内阅读，确保监听器挂上
+        // 始终挂鼠标监听：Ctrl+Alt+单击可开关行内阅读（无跳转目标时）
+        InlineReadMode.ensureListener();
+        // 若上次已开启，恢复状态
         if (InlineReadMode.getEnabled()) {
             InlineReadMode.setEnabled(true);
         }

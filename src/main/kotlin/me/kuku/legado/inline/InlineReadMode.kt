@@ -1,7 +1,9 @@
 package me.kuku.legado.inline
 
+import com.intellij.codeInsight.TargetElementUtil
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorCustomElementRenderer
 import com.intellij.openapi.editor.EditorFactory
@@ -13,6 +15,7 @@ import com.intellij.openapi.editor.event.EditorMouseListener
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.UIUtil
 import me.kuku.legado.api.ApiUtils
@@ -24,6 +27,7 @@ import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Rectangle
 import java.awt.RenderingHints
+import java.awt.event.MouseEvent
 import java.awt.font.FontRenderContext
 import javax.swing.SwingUtilities
 
@@ -37,10 +41,13 @@ import javax.swing.SwingUtilities
  * - 已显示但点到了另一行 → 只换位置显示，不切段
  *
  * 修饰键：
- * - 已显示 + 同一行 Ctrl/⌘+单击 → 上一段（consume，避免与 Goto Declaration 冲突）
- * - 未显示 / 其它行 Ctrl/⌘+单击 → 完全不处理，交给 IDE
+ * - 已显示 + 同一行 Ctrl/⌘+单击（无 Alt） → 上一段
+ * - 未显示 / 其它行 Ctrl/⌘+单击 → 交给 IDE
+ * - Ctrl+Alt / ⌘+Alt+单击：
+ *   若当前位置 IDE 可跳转（实现/声明）→ 不处理，交给 IDE；
+ *   否则开关行内阅读
  *
- * 接近章末时会预加载下一章正文到 ApiUtils 缓存（与正文窗口滚过半页同理）。
+ * 接近章末时会预加载下一章正文到 ApiUtils 缓存。
  */
 object InlineReadMode {
 
@@ -92,29 +99,207 @@ object InlineReadMode {
     private var lastShowEditor: Editor? = null
 
     private val mouseListener = object : EditorMouseListener {
-        override fun mouseClicked(event: EditorMouseEvent) {
-            if (!enabled) return
+        /**
+         * 全部在 pressed 处理：连点/双击时 clickCount 会变成 2、3…，
+         * 但「每一次按下」仍应跳一段，不能只响应 clickCount==1。
+         */
+        override fun mousePressed(event: EditorMouseEvent) {
+            if (!isEditingLeftButton(event)) return
             val me = event.mouseEvent
-            if (!SwingUtilities.isLeftMouseButton(me)) return
-            // 只处理单击，忽略双击/三击后续事件
-            if (me.clickCount != 1) return
-            if (event.area != EditorMouseEventArea.EDITING_AREA) return
             val editor = event.editor
-            if (editor.isDisposed) return
-            FileDocumentManager.getInstance().getFile(editor.document) ?: return
 
-            val withModifier = me.isControlDown || me.isMetaDown
-            if (withModifier) {
-                // 仅「已显示且同一行」才处理上一段；其它情况完全交给 IDE
-                if (!isShowingOn(editor)) return
-                val line = currentClickLine(editor)
-                val sameLine = lastShowEditor === editor && line >= 0 && line == lastShowLine
-                if (!sameLine) return
-                handlePreviousChunkClick(editor, me)
+            // Ctrl+Alt：开关行内阅读（无跳转目标时）
+            if (isCtrlAlt(me)) {
+                handleCtrlAltToggle(editor, me)
                 return
             }
-            handleClick(editor)
+
+            if (!enabled) return
+            FileDocumentManager.getInstance().getFile(editor.document) ?: return
+
+            val ctrlOnly = (me.isControlDown || me.isMetaDown) && !me.isAltDown && !me.isShiftDown
+            val plainClick = !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
+
+            if (ctrlOnly) {
+                // Ctrl/⌘+左键：仅已显示且同行时，每次按下回退一段
+                if (!isShowingOnSameLine(editor, me)) return
+                handleStepClick(editor, me, forward = false)
+                return
+            }
+
+            if (!plainClick) return
+
+            if (isShowingOnSameLine(editor, me)) {
+                // 已显示且同行：每次按下前进一段（不论多快、是否被系统算成双击）
+                handleStepClick(editor, me, forward = true)
+            } else {
+                // 首次显示 / 换行：只显示当前段，不切段
+                // 不 consume 首次单击，避免干扰正常编辑；连点时若随后变成同行再由上面分支接管
+                if (me.clickCount == 1) {
+                    handleClick(editor)
+                }
+            }
         }
+    }
+
+    private fun isEditingLeftButton(event: EditorMouseEvent): Boolean {
+        val me = event.mouseEvent
+        if (!SwingUtilities.isLeftMouseButton(me)) return false
+        if (event.area != EditorMouseEventArea.EDITING_AREA) return false
+        return !event.editor.isDisposed
+    }
+
+    /**
+     * 是否「当前编辑器、行内已显示、点击仍在同一行」。
+     * 行号优先用鼠标位置，避免双击选词后 caret 跑偏。
+     */
+    private fun isShowingOnSameLine(editor: Editor, me: MouseEvent? = null): Boolean {
+        if (!isShowingOn(editor)) return false
+        if (lastShowEditor !== editor || lastShowLine < 0) return false
+        val line = if (me != null) {
+            lineUnderMouse(editor, me)
+        } else {
+            currentClickLine(editor)
+        }
+        return line >= 0 && line == lastShowLine
+    }
+
+    private fun lineUnderMouse(editor: Editor, me: MouseEvent): Int {
+        return try {
+            val logical = editor.xyToLogicalPosition(me.point)
+            logical.line
+        } catch (_: Exception) {
+            currentClickLine(editor)
+        }
+    }
+
+    /**
+     * 同行连点：每次按下跳一段（前进或后退），并拦截 IDE 双击选词。
+     */
+    private fun handleStepClick(editor: Editor, me: MouseEvent, forward: Boolean) {
+        me.consume()
+        try {
+            editor.selectionModel.removeSelection()
+        } catch (_: Exception) {
+        }
+
+        if (pendingShowAfterLoad) {
+            showInlay(editor, "加载中…")
+            return
+        }
+        if (plainBody().isBlank()) {
+            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
+            return
+        }
+
+        val loading = if (forward) nextChunk() else previousChunk()
+        if (loading) {
+            showInlay(editor, "加载中…")
+        } else {
+            showCurrent(editor)
+        }
+    }
+
+    private fun isCtrlAlt(me: MouseEvent): Boolean {
+        val ctrlOrMeta = me.isControlDown || me.isMetaDown
+        return ctrlOrMeta && me.isAltDown && !me.isShiftDown
+    }
+
+    /**
+     * Ctrl+Alt+单击：有跳转目标则放行；否则开关行内阅读。
+     * 监听始终安装，关闭状态下也能用来打开。
+     */
+    private fun handleCtrlAltToggle(editor: Editor, me: MouseEvent) {
+        FileDocumentManager.getInstance().getFile(editor.document) ?: return
+        val offset = offsetUnderMouse(editor, me)
+        if (hasIdeNavigationTarget(editor, offset)) {
+            // 交给 IDE：跳转实现 / 声明
+            return
+        }
+        me.consume()
+        val on = toggle()
+        if (on) {
+            // 打开后若有正文，在当前光标旁显示当前段
+            if (plainBody().isNotBlank()) {
+                showCurrent(editor)
+            }
+        }
+    }
+
+    private fun offsetUnderMouse(editor: Editor, me: MouseEvent): Int {
+        return try {
+            val logical = editor.xyToLogicalPosition(me.point)
+            editor.logicalPositionToOffset(logical).coerceIn(0, editor.document.textLength)
+        } catch (_: Exception) {
+            editor.caretModel.offset.coerceIn(0, editor.document.textLength)
+        }
+    }
+
+    /**
+     * 当前位置 IDE 是否可能触发「跳转到声明/实现」。
+     * 有目标则返回 true，行内阅读不抢快捷键。
+     */
+    private fun hasIdeNavigationTarget(editor: Editor, offset: Int): Boolean {
+        val project = editor.project ?: return false
+        return try {
+            ReadAction.compute<Boolean, RuntimeException> {
+                PsiDocumentManager.getInstance(project).getPsiFile(editor.document)
+                    ?: return@compute false
+
+                // flags 兼容不同平台版本：优先反射 getAllAccepted / REFERENCED_ELEMENT_ACCEPTED
+                val flags = resolveTargetFlags()
+                val util = TargetElementUtil.getInstance()
+                val target = util.findTargetElement(editor, flags, offset)
+                if (target != null) {
+                    return@compute true
+                }
+                val ref = try {
+                    TargetElementUtil.findReference(editor, offset)
+                } catch (_: Throwable) {
+                    null
+                }
+                if (ref != null) {
+                    try {
+                        if (ref.resolve() != null) return@compute true
+                    } catch (_: Exception) {
+                        // 有引用但解析异常，仍视为可能可跳转，避免抢键
+                        return@compute true
+                    }
+                }
+                false
+            }
+        } catch (_: Throwable) {
+            // 探测失败：保守起见不抢（让 IDE 自己决定）
+            true
+        }
+    }
+
+    private fun resolveTargetFlags(): Int {
+        // 1) TargetElementUtil.getAllAccepted()
+        try {
+            val m = TargetElementUtil::class.java.getMethod("getAllAccepted")
+            val v = m.invoke(null)
+            if (v is Int) return v
+        } catch (_: Throwable) {
+        }
+        // 2) 常量字段 REFERENCED_ELEMENT_ACCEPTED | ELEMENT_NAME_ACCEPTED 等
+        var flags = 0
+        var found = false
+        for (name in listOf(
+            "REFERENCED_ELEMENT_ACCEPTED",
+            "ELEMENT_NAME_ACCEPTED",
+            "LOOKUPITEM_ACCEPTED",
+        )) {
+            try {
+                val f = TargetElementUtil::class.java.getField(name)
+                flags = flags or (f.getInt(null))
+                found = true
+            } catch (_: Throwable) {
+            }
+        }
+        if (found) return flags
+        // 3) 兜底：-1 表示尽量全接受（部分实现会按 bit 过滤）
+        return -1
     }
 
     @JvmStatic
@@ -176,7 +361,11 @@ object InlineReadMode {
         }
     }
 
-    private fun ensureListener() {
+    /**
+     * 始终安装监听：即使行内阅读关闭，Ctrl+Alt+单击仍可用于开启。
+     */
+    @JvmStatic
+    fun ensureListener() {
         if (listenerInstalled) return
         EditorFactory.getInstance().eventMulticaster.addEditorMouseListener(mouseListener, parentDisposable)
         listenerInstalled = true
@@ -194,30 +383,6 @@ object InlineReadMode {
         } catch (_: Exception) {
             -1
         }
-    }
-
-    /**
-     * 已显示且同一行的 Ctrl/⌘+单击 → 上一段。
-     * 调用前已确认 same-line；此处 consume，避免与跳转定义冲突。
-     */
-    private fun handlePreviousChunkClick(editor: Editor, me: java.awt.event.MouseEvent) {
-        if (pendingShowAfterLoad) {
-            showInlay(editor, "加载中…")
-            me.consume()
-            return
-        }
-        val text = plainBody()
-        if (text.isBlank()) {
-            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
-            me.consume()
-            return
-        }
-        if (previousChunk()) {
-            showInlay(editor, "加载中…")
-        } else {
-            showCurrent(editor)
-        }
-        me.consume()
     }
 
     private fun handleClick(editor: Editor) {
