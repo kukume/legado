@@ -100,15 +100,18 @@ object InlineReadMode {
 
     private val mouseListener = object : EditorMouseListener {
         /**
-         * 全部在 pressed 处理：连点/双击时 clickCount 会变成 2、3…，
-         * 但「每一次按下」仍应跳一段，不能只响应 clickCount==1。
+         * 同行跳段必须在 pressed 完成：
+         * 一旦 consume，部分平台不再可靠派发 clicked，导致「本行不跳、空白处乱跳」。
+         *
+         * 同行判定只用鼠标 Y → 逻辑行，不用 caret：
+         * - 点空白处 caret 往往不动，用 caret 会误判成同行
+         * - pressed 时 caret 还在旧行，用 caret 会把换行点误判成同行
          */
         override fun mousePressed(event: EditorMouseEvent) {
             if (!isEditingLeftButton(event)) return
             val me = event.mouseEvent
             val editor = event.editor
 
-            // Ctrl+Alt：开关行内阅读（无跳转目标时）
             if (isCtrlAlt(me)) {
                 handleCtrlAltToggle(editor, me)
                 return
@@ -119,26 +122,32 @@ object InlineReadMode {
 
             val ctrlOnly = (me.isControlDown || me.isMetaDown) && !me.isAltDown && !me.isShiftDown
             val plainClick = !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
+            if (!ctrlOnly && !plainClick) return
 
-            if (ctrlOnly) {
-                // Ctrl/⌘+左键：仅已显示且同行时，每次按下回退一段
-                if (!isShowingOnSameLine(editor, me)) return
-                handleStepClick(editor, me, forward = false)
-                return
+            // 仅「已显示 + 鼠标落在上次显示行」才跳段
+            if (isShowingOn(editor) && isClickOnLastShowLine(editor, me)) {
+                handleStepClick(editor, me, forward = !ctrlOnly)
             }
+            // 换行 / 首次：留给 mouseClicked，且不 consume，让 caret 正常移动
+        }
 
+        override fun mouseClicked(event: EditorMouseEvent) {
+            if (!isEditingLeftButton(event)) return
+            val me = event.mouseEvent
+            val editor = event.editor
+
+            if (isCtrlAlt(me) || me.isConsumed) return
+            if (!enabled) return
+            FileDocumentManager.getInstance().getFile(editor.document) ?: return
+
+            val ctrlOnly = (me.isControlDown || me.isMetaDown) && !me.isAltDown && !me.isShiftDown
+            val plainClick = !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
+            if (ctrlOnly) return // 同行回退只在 pressed 处理；其它行 Ctrl 交给 IDE
             if (!plainClick) return
 
-            if (isShowingOnSameLine(editor, me)) {
-                // 已显示且同行：每次按下前进一段（不论多快、是否被系统算成双击）
-                handleStepClick(editor, me, forward = true)
-            } else {
-                // 首次显示 / 换行：只显示当前段，不切段
-                // 不 consume 首次单击，避免干扰正常编辑；连点时若随后变成同行再由上面分支接管
-                if (me.clickCount == 1) {
-                    handleClick(editor)
-                }
-            }
+            // 同行已在 pressed 跳段；这里只处理「首次显示 / 换行换位置」
+            if (isShowingOn(editor) && isClickOnLastShowLine(editor, me)) return
+            relocateOnly(editor, me)
         }
     }
 
@@ -149,27 +158,33 @@ object InlineReadMode {
         return !event.editor.isDisposed
     }
 
-    /**
-     * 是否「当前编辑器、行内已显示、点击仍在同一行」。
-     * 行号优先用鼠标位置，避免双击选词后 caret 跑偏。
-     */
-    private fun isShowingOnSameLine(editor: Editor, me: MouseEvent? = null): Boolean {
-        if (!isShowingOn(editor)) return false
+    /** 鼠标落点是否在上次显示的那一行（仅看鼠标坐标，不看 caret） */
+    private fun isClickOnLastShowLine(editor: Editor, me: MouseEvent): Boolean {
         if (lastShowEditor !== editor || lastShowLine < 0) return false
-        val line = if (me != null) {
-            lineUnderMouse(editor, me)
-        } else {
-            currentClickLine(editor)
-        }
+        val line = lineUnderMouse(editor, me)
         return line >= 0 && line == lastShowLine
     }
 
     private fun lineUnderMouse(editor: Editor, me: MouseEvent): Int {
         return try {
-            val logical = editor.xyToLogicalPosition(me.point)
+            val visual = editor.xyToVisualPosition(me.point)
+            val logical = editor.visualToLogicalPosition(visual)
+            // 点在文件末尾空白：logical.line 可能被夹到最后一行，但仍应用鼠标视觉行
+            // 若点击 Y 明显在最后一行之下，视为「非本行」
+            val doc = editor.document
+            if (doc.lineCount > 0) {
+                val lastLine = doc.lineCount - 1
+                val lastLineY = editor.logicalPositionToXY(
+                    com.intellij.openapi.editor.LogicalPosition(lastLine, 0)
+                ).y
+                val lineHeight = editor.lineHeight
+                if (me.y > lastLineY + lineHeight) {
+                    return -2 // 文件下方空白，绝不算同行
+                }
+            }
             logical.line
         } catch (_: Exception) {
-            currentClickLine(editor)
+            -1
         }
     }
 
@@ -198,6 +213,25 @@ object InlineReadMode {
         } else {
             showCurrent(editor)
         }
+    }
+
+    /** 换行 / 首次：只换位置显示当前段，绝不 next/prev */
+    private fun relocateOnly(editor: Editor, me: MouseEvent) {
+        if (pendingShowAfterLoad) {
+            showInlay(editor, "加载中…")
+            return
+        }
+        if (plainBody().isBlank()) {
+            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
+            return
+        }
+        // 尽量移到鼠标点击处再显示
+        try {
+            val offset = offsetUnderMouse(editor, me)
+            editor.caretModel.moveToOffset(offset)
+        } catch (_: Exception) {
+        }
+        showCurrent(editor)
     }
 
     private fun isCtrlAlt(me: MouseEvent): Boolean {
@@ -375,42 +409,6 @@ object InlineReadMode {
         return activeInlay != null &&
                 activeInlay?.isValid == true &&
                 activeEditor === editor
-    }
-
-    private fun currentClickLine(editor: Editor): Int {
-        return try {
-            editor.document.getLineNumber(editor.caretModel.offset)
-        } catch (_: Exception) {
-            -1
-        }
-    }
-
-    private fun handleClick(editor: Editor) {
-        // 下一章正文还在加载：不要用旧章 body 切片
-        if (pendingShowAfterLoad) {
-            showInlay(editor, "加载中…")
-            return
-        }
-
-        val text = plainBody()
-        if (text.isBlank()) {
-            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
-            return
-        }
-
-        val line = currentClickLine(editor)
-
-        val showing = isShowingOn(editor)
-
-        if (showing && lastShowEditor === editor && line >= 0 && line == lastShowLine) {
-            // 同一行再点 → 下一段；若已触发切章，等 afterBodyLoaded 刷新
-            if (nextChunk()) {
-                showInlay(editor, "加载中…")
-                return
-            }
-        }
-        // 未显示，或换行点击：只（重新）显示当前段，不切段
-        showCurrent(editor)
     }
 
     private fun plainBody(): String {
