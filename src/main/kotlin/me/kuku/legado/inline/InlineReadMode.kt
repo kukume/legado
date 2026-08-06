@@ -8,13 +8,19 @@ import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorCustomElementRenderer
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.Inlay
+import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.editor.colors.EditorFontType
+import com.intellij.openapi.editor.event.EditorFactoryEvent
+import com.intellij.openapi.editor.event.EditorFactoryListener
 import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.editor.event.EditorMouseEventArea
 import com.intellij.openapi.editor.event.EditorMouseListener
+import com.intellij.openapi.editor.ex.EditorEx
+import com.intellij.openapi.editor.ex.EditorPopupHandler
 import com.intellij.openapi.editor.markup.TextAttributes
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.UIUtil
@@ -35,15 +41,13 @@ import javax.swing.SwingUtilities
  * 行内隐蔽阅读：把当前章节按可配置字数切分（默认 80），
  * 在编辑器光标右侧用 Inlay 显示。
  *
- * 单击逻辑：
- * - 当前没有显示 → 显示当前段
- * - 已显示且仍在同一行 → 下一段
- * - 已显示但点到了另一行 → 只换位置显示，不切段
+ * 鼠标逻辑（开启后）：
+ * - 同行左键 → 下一段（连点也算）
+ * - 同行右键 → 上一段，拦截 IDE 菜单
+ * - 其它行左键 / 右键 → 只换位置显示，不切段；右键同样拦截菜单
  *
  * 修饰键：
- * - 已显示 + 同一行 Ctrl/⌘+单击（无 Alt） → 上一段
- * - 未显示 / 其它行 Ctrl/⌘+单击 → 交给 IDE
- * - Ctrl+Alt / ⌘+Alt+单击：
+ * - Ctrl+Alt / ⌘+Alt+左键：
  *   若当前位置 IDE 可跳转（实现/声明）→ 不处理，交给 IDE；
  *   否则开关行内阅读
  *
@@ -90,6 +94,7 @@ object InlineReadMode {
 
     private val parentDisposable = Disposer.newDisposable("legado-inline-read")
     private var listenerInstalled = false
+    private val POPUP_HANDLER_KEY = Key.create<EditorPopupHandler>("me.kuku.legado.inline.popupHandler")
 
     /** 当前显示的 inlay */
     private var activeInlay: Inlay<*>? = null
@@ -98,21 +103,39 @@ object InlineReadMode {
     private var lastShowLine: Int = -1
     private var lastShowEditor: Editor? = null
 
+    /**
+     * 开启行内模式后：无修饰键右键一律拦截 IDE 菜单
+     * （同行上一段 / 其它行换位，都由我们处理）。
+     */
+    private val popupSuppressHandler = EditorPopupHandler { event ->
+        if (!enabled) return@EditorPopupHandler false
+        if (!isEditingArea(event)) return@EditorPopupHandler false
+        val me = event.mouseEvent
+        if (me.isControlDown || me.isMetaDown || me.isAltDown || me.isShiftDown) {
+            return@EditorPopupHandler false
+        }
+        me.consume()
+        try {
+            event.editor.selectionModel.removeSelection()
+        } catch (_: Exception) {
+        }
+        true
+    }
+
     private val mouseListener = object : EditorMouseListener {
         /**
-         * 同行跳段必须在 pressed 完成：
-         * 一旦 consume，部分平台不再可靠派发 clicked，导致「本行不跳、空白处乱跳」。
-         *
-         * 同行判定只用鼠标 Y → 逻辑行，不用 caret：
-         * - 点空白处 caret 往往不动，用 caret 会误判成同行
-         * - pressed 时 caret 还在旧行，用 caret 会把换行点误判成同行
+         * 跳段 / 换位尽量在 pressed 完成。
+         * 同行判定只用鼠标 Y → 逻辑行，不用 caret。
+         * 显示位置也用鼠标落点。
          */
         override fun mousePressed(event: EditorMouseEvent) {
-            if (!isEditingLeftButton(event)) return
+            if (!isEditingArea(event)) return
             val me = event.mouseEvent
             val editor = event.editor
+            ensurePopupHandler(editor)
 
-            if (isCtrlAlt(me)) {
+            // 左键 Ctrl+Alt：开关行内阅读（无跳转目标时）
+            if (SwingUtilities.isLeftMouseButton(me) && isCtrlAlt(me)) {
                 handleCtrlAltToggle(editor, me)
                 return
             }
@@ -120,29 +143,65 @@ object InlineReadMode {
             if (!enabled) return
             FileDocumentManager.getInstance().getFile(editor.document) ?: return
 
-            val ctrlOnly = (me.isControlDown || me.isMetaDown) && !me.isAltDown && !me.isShiftDown
-            val plainClick = !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
-            if (!ctrlOnly && !plainClick) return
+            val plain = !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
+            if (!plain) return
 
-            // 仅「已显示 + 鼠标落在上次显示行」才跳段
-            if (isShowingOn(editor) && isClickOnLastShowLine(editor, me)) {
-                handleStepClick(editor, me, forward = !ctrlOnly)
+            // 右键：显示行 → 上一段；其它行 / 未显示 → 换位显示（与左键换行相同）
+            if (SwingUtilities.isRightMouseButton(me)) {
+                if (isShowingOn(editor) && isClickOnLastShowLine(editor, me)) {
+                    handleStepClick(editor, me, forward = false)
+                } else {
+                    // 首次或换行：只换位置，不切段
+                    relocateOnly(editor, me)
+                    me.consume()
+                }
+                return
             }
-            // 换行 / 首次：留给 mouseClicked，且不 consume，让 caret 正常移动
+
+            // 左键：显示行 → 下一段；其它行留给 clicked 换位
+            if (SwingUtilities.isLeftMouseButton(me)) {
+                if (isShowingOn(editor) && isClickOnLastShowLine(editor, me)) {
+                    handleStepClick(editor, me, forward = true)
+                }
+            }
+        }
+
+        override fun mouseReleased(event: EditorMouseEvent) {
+            if (!enabled) return
+            if (!isEditingArea(event)) return
+            val me = event.mouseEvent
+            if (!SwingUtilities.isRightMouseButton(me) && !me.isPopupTrigger) return
+            if (me.isControlDown || me.isMetaDown || me.isAltDown || me.isShiftDown) return
+            // 开启后无修饰键右键一律拦住菜单
+            me.consume()
+            try {
+                event.editor.selectionModel.removeSelection()
+            } catch (_: Exception) {
+            }
         }
 
         override fun mouseClicked(event: EditorMouseEvent) {
-            if (!isEditingLeftButton(event)) return
+            if (!isEditingArea(event)) return
             val me = event.mouseEvent
             val editor = event.editor
+            ensurePopupHandler(editor)
 
+            // 右键：pressed 已处理跳段/换位；这里只继续 consume 防菜单
+            if (SwingUtilities.isRightMouseButton(me) || me.isPopupTrigger) {
+                if (enabled &&
+                    !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
+                ) {
+                    me.consume()
+                }
+                return
+            }
+
+            if (!SwingUtilities.isLeftMouseButton(me)) return
             if (isCtrlAlt(me) || me.isConsumed) return
             if (!enabled) return
             FileDocumentManager.getInstance().getFile(editor.document) ?: return
 
-            val ctrlOnly = (me.isControlDown || me.isMetaDown) && !me.isAltDown && !me.isShiftDown
             val plainClick = !me.isControlDown && !me.isMetaDown && !me.isAltDown && !me.isShiftDown
-            if (ctrlOnly) return // 同行回退只在 pressed 处理；其它行 Ctrl 交给 IDE
             if (!plainClick) return
 
             // 同行已在 pressed 跳段；这里只处理「首次显示 / 换行换位置」
@@ -151,9 +210,7 @@ object InlineReadMode {
         }
     }
 
-    private fun isEditingLeftButton(event: EditorMouseEvent): Boolean {
-        val me = event.mouseEvent
-        if (!SwingUtilities.isLeftMouseButton(me)) return false
+    private fun isEditingArea(event: EditorMouseEvent): Boolean {
         if (event.area != EditorMouseEventArea.EDITING_AREA) return false
         return !event.editor.isDisposed
     }
@@ -189,7 +246,8 @@ object InlineReadMode {
     }
 
     /**
-     * 同行连点：每次按下跳一段（前进或后退），并拦截 IDE 双击选词。
+     * 同行连点：每次按下跳一段（前进或后退）。
+     * 显示位置强制用鼠标落点，不用 caret（右键不会移动 caret）。
      */
     private fun handleStepClick(editor: Editor, me: MouseEvent, forward: Boolean) {
         me.consume()
@@ -198,40 +256,75 @@ object InlineReadMode {
         } catch (_: Exception) {
         }
 
+        val place = placeFromMouse(editor, me)
         if (pendingShowAfterLoad) {
-            showInlay(editor, "加载中…")
+            showInlay(editor, "加载中…", place)
             return
         }
         if (plainBody().isBlank()) {
-            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
+            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章", place)
             return
         }
 
         val loading = if (forward) nextChunk() else previousChunk()
         if (loading) {
-            showInlay(editor, "加载中…")
+            showInlay(editor, "加载中…", place)
         } else {
-            showCurrent(editor)
+            showCurrent(editor, place)
         }
     }
 
     /** 换行 / 首次：只换位置显示当前段，绝不 next/prev */
     private fun relocateOnly(editor: Editor, me: MouseEvent) {
+        val place = placeFromMouse(editor, me)
         if (pendingShowAfterLoad) {
-            showInlay(editor, "加载中…")
+            showInlay(editor, "加载中…", place)
             return
         }
         if (plainBody().isBlank()) {
-            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章")
+            showInlay(editor, "暂无正文，请先在 Legado Reader 打开一章", place)
             return
         }
-        // 尽量移到鼠标点击处再显示
-        try {
-            val offset = offsetUnderMouse(editor, me)
-            editor.caretModel.moveToOffset(offset)
-        } catch (_: Exception) {
+        // 左键换行时同步 caret，方便继续编辑；显示仍按 place
+        if (SwingUtilities.isLeftMouseButton(me)) {
+            try {
+                editor.caretModel.moveToOffset(place.offset)
+            } catch (_: Exception) {
+            }
         }
-        showCurrent(editor)
+        showCurrent(editor, place)
+    }
+
+    private data class Place(val offset: Int, val line: Int)
+
+    /** 用鼠标坐标计算显示位置；同行右键时夹在 lastShowLine 上，避免跑到 caret 所在行 */
+    private fun placeFromMouse(editor: Editor, me: MouseEvent): Place {
+        val mouseLine = lineUnderMouse(editor, me)
+        val line = when {
+            mouseLine >= 0 -> mouseLine
+            lastShowEditor === editor && lastShowLine >= 0 -> lastShowLine
+            else -> try {
+                editor.document.getLineNumber(editor.caretModel.offset)
+            } catch (_: Exception) {
+                0
+            }
+        }
+        val offset = try {
+            val visual = editor.xyToVisualPosition(me.point)
+            val logical = editor.visualToLogicalPosition(visual)
+            val targetLine = if (line >= 0) line else logical.line
+            val col = logical.column.coerceAtLeast(0)
+            editor.logicalPositionToOffset(LogicalPosition(targetLine.coerceAtLeast(0), col))
+                .coerceIn(0, editor.document.textLength)
+        } catch (_: Exception) {
+            offsetUnderMouse(editor, me)
+        }
+        val finalLine = try {
+            editor.document.getLineNumber(offset)
+        } catch (_: Exception) {
+            line
+        }
+        return Place(offset, finalLine)
     }
 
     private fun isCtrlAlt(me: MouseEvent): Boolean {
@@ -401,8 +494,25 @@ object InlineReadMode {
     @JvmStatic
     fun ensureListener() {
         if (listenerInstalled) return
-        EditorFactory.getInstance().eventMulticaster.addEditorMouseListener(mouseListener, parentDisposable)
+        val factory = EditorFactory.getInstance()
+        factory.eventMulticaster.addEditorMouseListener(mouseListener, parentDisposable)
+        // 现有编辑器 + 后续新建编辑器都挂上右键菜单拦截
+        factory.addEditorFactoryListener(object : EditorFactoryListener {
+            override fun editorCreated(event: EditorFactoryEvent) {
+                ensurePopupHandler(event.editor)
+            }
+        }, parentDisposable)
+        for (editor in factory.allEditors) {
+            ensurePopupHandler(editor)
+        }
         listenerInstalled = true
+    }
+
+    private fun ensurePopupHandler(editor: Editor) {
+        val ex = editor as? EditorEx ?: return
+        if (editor.getUserData(POPUP_HANDLER_KEY) != null) return
+        ex.installPopupHandler(popupSuppressHandler)
+        editor.putUserData(POPUP_HANDLER_KEY, popupSuppressHandler)
     }
 
     private fun isShowingOn(editor: Editor): Boolean {
@@ -521,26 +631,28 @@ object InlineReadMode {
         }
     }
 
-    private fun showCurrent(editor: Editor) {
+    private fun showCurrent(editor: Editor, place: Place? = null) {
         val chunk = currentChunkText()
         if (chunk.isBlank()) {
-            showInlay(editor, "（无内容）")
+            showInlay(editor, "（无内容）", place)
             return
         }
         val text = plainBody()
         val max = maxChunkIndex(text)
         val progress = "${chunkIndex + 1}/${max + 1}"
-        showInlay(editor, "$chunk ·$progress")
+        showInlay(editor, "$chunk ·$progress", place)
         maybePreloadNextChapter(max)
     }
 
-    private fun showInlay(editor: Editor, text: String) {
+    private fun showInlay(editor: Editor, text: String, place: Place? = null) {
         if (editor.isDisposed) return
         ApplicationManager.getApplication().invokeLater {
             if (editor.isDisposed) return@invokeLater
             clearInlay()
-            val offset = editor.caretModel.offset.coerceIn(0, editor.document.textLength)
-            val line = try {
+            // 优先用调用方给出的鼠标落点；不要默认 caret（右键后 caret 常停在别的行）
+            val offset = (place?.offset ?: editor.caretModel.offset)
+                .coerceIn(0, editor.document.textLength)
+            val line = place?.line?.takeIf { it >= 0 } ?: try {
                 editor.document.getLineNumber(offset)
             } catch (_: Exception) {
                 -1
