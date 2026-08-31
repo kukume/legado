@@ -1,0 +1,224 @@
+{
+  "name": "legado-reader",
+  "displayName": "Legado Reader",
+  "description": "IDE 小说阅读扩展：对接 langge 接口，书架、目录、正文，以及光标后的行内阅读。",
+  "version": "1.0.0",
+  "publisher": "kuku",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kukume/legado.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["legado", "reader", "novel", "langge"],
+  "activationEvents": [
+    "onView:legado.reader",
+    "onCommand:legado.toggleInlineRead",
+    "onCommand:legado.inlineNextChunk",
+    "onCommand:legado.inlinePrevChunk"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Legado Reader",
+      "properties": {
+        "legado.address": {
+          "type": "string",
+          "default": "https://api.langge.cf",
+          "description": "上游 API 地址"
+        },
+        "legado.cookie": {
+          "type": "string",
+          "default": "",
+          "description": "Cookie，例如 qttoken=...; deviceId=..."
+        },
+        "legado.enableErrorLog": {
+          "type": "boolean",
+          "default": false,
+          "description": "开启异常日志"
+        },
+        "legado.textBodyFontColor": {
+          "type": "string",
+          "default": "",
+          "description": "正文字体颜色，如 #cccccc；留空则跟随主题"
+        },
+        "legado.textBodyFontSize": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "正文字号（px），0 表示跟随编辑器"
+        },
+        "legado.inlineReadChunkSize": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 500,
+          "description": "行内阅读每段字数"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "legado",
+          "title": "Legado Reader",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "legado": [
+        {
+          "type": "webview",
+          "id": "legado.reader",
+          "name": "Legado Reader"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "legado.refreshBookshelf",
+        "title": "刷新书架",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/refresh.svg",
+          "dark": "media/icons/refresh_dark.svg"
+        }
+      },
+      {
+        "command": "legado.backBookshelf",
+        "title": "返回书架",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/back.svg",
+          "dark": "media/icons/back_dark.svg"
+        }
+      },
+      {
+        "command": "legado.previousChapter",
+        "title": "上一章",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/previousChapter.svg",
+          "dark": "media/icons/previousChapter_dark.svg"
+        }
+      },
+      {
+        "command": "legado.nextChapter",
+        "title": "下一章",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/nextChapter.svg",
+          "dark": "media/icons/nextChapter_dark.svg"
+        }
+      },
+      {
+        "command": "legado.refreshTextBody",
+        "title": "刷新文章",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/refresh.svg",
+          "dark": "media/icons/refresh_dark.svg"
+        }
+      },
+      {
+        "command": "legado.showBookInfo",
+        "title": "当前阅读信息",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/showBookInfo.svg",
+          "dark": "media/icons/showBookInfo_dark.svg"
+        }
+      },
+      {
+        "command": "legado.toggleActionBar",
+        "title": "切换工具栏",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/toggleBar.svg",
+          "dark": "media/icons/toggleBar_dark.svg"
+        }
+      },
+      {
+        "command": "legado.toggleInlineRead",
+        "title": "行内阅读",
+        "category": "Legado Reader",
+        "icon": {
+          "light": "media/icons/inlineRead.svg",
+          "dark": "media/icons/inlineRead_dark.svg"
+        }
+      },
+      {
+        "command": "legado.inlinePrevChunk",
+        "title": "行内上一段",
+        "category": "Legado Reader"
+      },
+      {
+        "command": "legado.inlineNextChunk",
+        "title": "行内下一段",
+        "category": "Legado Reader"
+      },
+      {
+        "command": "legado.openSettings",
+        "title": "打开设置",
+        "category": "Legado Reader"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "legado.inlinePrevChunk",
+        "key": "ctrl+alt+[",
+        "mac": "ctrl+alt+[",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "legado.inlineNextChunk",
+        "key": "ctrl+alt+]",
+        "mac": "ctrl+alt+]",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "legado.toggleInlineRead",
+          "when": "view == legado.reader",
+          "group": "navigation@1"
+        },
+        {
+          "command": "legado.toggleActionBar",
+          "when": "view == legado.reader",
+          "group": "navigation@2"
+        },
+        {
+          "command": "legado.refreshBookshelf",
+          "when": "view == legado.reader",
+          "group": "navigation@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "legado.inlinePrevChunk"
+        },
+        {
+          "command": "legado.inlineNextChunk"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "npm run compile && node --test out/test/*.js",
+    "package": "npm run compile && npx --yes @vscode/vsce package --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.7.2"
+  }
+}

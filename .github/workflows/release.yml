@@ -28,26 +28,45 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build plugin
+      - name: Build IntelliJ plugin
+        working-directory: IntelliJ
         run: |
           chmod +x ./gradlew
           ./gradlew buildPlugin --no-daemon --stacktrace
 
-      - name: Resolve version and zip
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+
+      - name: Build VS Code VSIX
+        working-directory: vscode
+        run: |
+          npm ci
+          npm test
+          npm run package
+
+      - name: Resolve artifacts
         id: artifact
         run: |
-          VERSION=$(./gradlew properties -q | sed -n 's/^version: //p' | head -n1)
+          VERSION=$(cd IntelliJ && ./gradlew properties -q | sed -n 's/^version: //p' | head -n1)
           if [ -z "$VERSION" ]; then
-            VERSION=$(grep -E '^\s*version\s*=' build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+            VERSION=$(grep -E '^\s*version\s*=' IntelliJ/build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
           fi
-          ZIP_PATH=$(ls -1 build/distributions/*.zip | head -n1)
+          ZIP_PATH=$(ls -1 IntelliJ/build/distributions/*.zip | head -n1)
           ZIP_NAME=$(basename "$ZIP_PATH")
+          VSIX_PATH=$(ls -1 vscode/*.vsix | head -n1)
+          VSIX_NAME=$(basename "$VSIX_PATH")
           {
             echo "version=$VERSION"
             echo "zip_path=$ZIP_PATH"
             echo "zip_name=$ZIP_NAME"
+            echo "vsix_path=$VSIX_PATH"
+            echo "vsix_name=$VSIX_NAME"
           } >> "$GITHUB_OUTPUT"
-          echo "Resolved version=$VERSION zip=$ZIP_PATH"
+          echo "Resolved version=$VERSION zip=$ZIP_PATH vsix=$VSIX_PATH"
 
       - name: Publish latest release (overwrite)
         env:
@@ -55,6 +74,8 @@ jobs:
           VERSION: ${{ steps.artifact.outputs.version }}
           ZIP_PATH: ${{ steps.artifact.outputs.zip_path }}
           ZIP_NAME: ${{ steps.artifact.outputs.zip_name }}
+          VSIX_PATH: ${{ steps.artifact.outputs.vsix_path }}
+          VSIX_NAME: ${{ steps.artifact.outputs.vsix_name }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
@@ -62,23 +83,25 @@ jobs:
 
           SHORT_SHA="${SHA:0:7}"
           TITLE="Legado Reader ${VERSION}"
-          # 每次完整重写 notes，不使用 generate release notes，避免正文累加
           NOTES="$(cat <<EOF
           ## Legado Reader ${VERSION}
 
           - Commit: \`${SHORT_SHA}\`
-          - Artifact: \`${ZIP_NAME}\`
+          - IntelliJ: \`${ZIP_NAME}\`
+          - VS Code: \`${VSIX_NAME}\`
 
-          安装：IDE → Settings → Plugins → ⚙️ → Install Plugin from Disk… → 选择 zip
+          ### IntelliJ IDEA
+          Settings → Plugins → ⚙️ → Install Plugin from Disk… → 选择 zip
+
+          ### Visual Studio Code / Cursor
+          Extensions → ⋯ → Install from VSIX… → 选择 vsix
           EOF
           )"
 
-          # 删除旧的 latest release + tag，再重建，确保附件和正文都覆盖而不是追加
           gh release delete latest --repo "$REPO" --cleanup-tag --yes || true
-          # 若仅 tag 残留也清掉
           git push origin :refs/tags/latest || true
 
-          gh release create latest "$ZIP_PATH" \
+          gh release create latest "$ZIP_PATH" "$VSIX_PATH" \
             --repo "$REPO" \
             --title "$TITLE" \
             --notes "$NOTES" \
